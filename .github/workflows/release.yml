@@ -1,0 +1,208 @@
+name: CI Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build GUI for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --noconsole --onefile --add-data "data;data" src/gui.py
+
+      - name: Build with PyInstaller (macOS/Linux)
+        if: runner.os != 'Windows'
+        run: |
+          pyinstaller --onefile --add-data "data:data" src/gui.py
+
+      - name: List dist
+        run: |
+          if [ -d dist ]; then ls -la dist; else dir dist; fi
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-build-${{ matrix.os }}
+          path: dist
+
+  release:
+    name: Create GitHub Release and attach assets
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gui-build-ubuntu-latest
+          path: artifacts/ubuntu
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gui-build-windows-latest
+          path: artifacts/windows
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gui-build-macos-latest
+          path: artifacts/macos
+
+      - name: List downloaded
+        run: |
+          echo "Listing artifacts directory recursively"
+          if [ -d artifacts ]; then
+            ls -la artifacts || true
+            echo "--- artifacts/ubuntu ---"
+            ls -la artifacts/ubuntu || true
+            echo "--- artifacts/macos ---"
+            ls -la artifacts/macos || true
+            echo "--- artifacts/windows ---"
+            ls -la artifacts/windows || true
+            echo "Files under artifacts (up to 3 levels):"
+            find artifacts -maxdepth 3 -type f -print || true
+          else
+            echo "artifacts directory not present"
+            dir artifacts || true
+          fi
+
+      - name: Package artifacts
+        run: |
+          set -eux
+          mkdir -p release_assets
+
+          # Linux: prefer artifacts/ubuntu/dist, fallback to files directly under artifacts/ubuntu
+          if [ -d artifacts/ubuntu/dist ]; then
+            echo "Packaging Linux from artifacts/ubuntu/dist"
+            tar -czf release_assets/glass-planner-linux.tar.gz -C artifacts/ubuntu dist
+            echo "LINUX_ASSET_EXISTS=true" >> $GITHUB_ENV
+          elif [ -n "$(find artifacts/ubuntu -maxdepth 1 -type f -print -quit 2>/dev/null)" ]; then
+            echo "Packaging Linux from artifacts/ubuntu files"
+            tar -czf release_assets/glass-planner-linux.tar.gz -C artifacts/ubuntu .
+            echo "LINUX_ASSET_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "No linux files found"
+          fi
+
+          # macOS: prefer artifacts/macos/dist, fallback to files directly under artifacts/macos
+          if [ -d artifacts/macos/dist ]; then
+            echo "Packaging macOS from artifacts/macos/dist"
+            tar -czf release_assets/glass-planner-macos.tar.gz -C artifacts/macos dist
+            echo "MACOS_ASSET_EXISTS=true" >> $GITHUB_ENV
+          elif [ -n "$(find artifacts/macos -maxdepth 1 -type f -print -quit 2>/dev/null)" ]; then
+            echo "Packaging macOS from artifacts/macos files"
+            tar -czf release_assets/glass-planner-macos.tar.gz -C artifacts/macos .
+            echo "MACOS_ASSET_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "No macos files found"
+          fi
+
+          # Windows: prefer artifacts/windows/dist, fallback to files directly under artifacts/windows
+          if [ -d artifacts/windows/dist ]; then
+            echo "Packaging Windows from artifacts/windows/dist"
+            if command -v zip >/dev/null 2>&1; then
+              (cd artifacts/windows/dist && zip -r ../../release_assets/glass-planner-windows.zip .)
+            elif command -v powershell >/dev/null 2>&1; then
+              powershell -Command "Compress-Archive -Path 'artifacts/windows/dist/*' -DestinationPath 'release_assets/glass-planner-windows.zip'"
+            else
+              echo "No zip or powershell available"
+            fi
+            if [ -f release_assets/glass-planner-windows.zip ]; then
+              echo "WINDOWS_ASSET_EXISTS=true" >> $GITHUB_ENV
+            fi
+          elif [ -n "$(find artifacts/windows -maxdepth 1 -type f -print -quit 2>/dev/null)" ]; then
+            echo "Packaging Windows from artifacts/windows files"
+            if command -v zip >/dev/null 2>&1; then
+              (cd artifacts/windows && zip -r ../../release_assets/glass-planner-windows.zip .)
+            elif command -v powershell >/dev/null 2>&1; then
+              powershell -Command "Compress-Archive -Path 'artifacts/windows/*' -DestinationPath 'release_assets/glass-planner-windows.zip'"
+            else
+              tar -czf release_assets/glass-planner-windows.tar.gz -C artifacts/windows .
+            fi
+            if [ -f release_assets/glass-planner-windows.zip ] || [ -f release_assets/glass-planner-windows.tar.gz ]; then
+              echo "WINDOWS_ASSET_EXISTS=true" >> $GITHUB_ENV
+            fi
+          else
+            echo "No windows files found"
+          fi
+
+          ls -la release_assets || true
+          echo "Contents of release_assets:"
+          find release_assets -type f -maxdepth 2 -print || true
+
+      - name: Debug release assets
+        run: |
+          echo "ENV flags:"
+          echo "LINUX_ASSET_EXISTS=${LINUX_ASSET_EXISTS:-unset}"
+          echo "MACOS_ASSET_EXISTS=${MACOS_ASSET_EXISTS:-unset}"
+          echo "WINDOWS_ASSET_EXISTS=${WINDOWS_ASSET_EXISTS:-unset}"
+          echo "Listing release_assets:"
+          ls -la release_assets || true
+          find release_assets -type f -maxdepth 2 -print || true
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: glass-planner ${{ github.ref_name }}
+          body: Automated release for glass-planner
+          draft: false
+          prerelease: false
+
+      - name: Upload Linux asset
+        if: env.LINUX_ASSET_EXISTS == 'true'
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: release_assets/glass-planner-linux.tar.gz
+          asset_name: glass-planner-linux.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload macOS asset
+        if: env.MACOS_ASSET_EXISTS == 'true'
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: release_assets/glass-planner-macos.tar.gz
+          asset_name: glass-planner-macos.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload Windows asset
+        if: env.WINDOWS_ASSET_EXISTS == 'true'
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: release_assets/glass-planner-windows.zip
+          asset_name: glass-planner-windows.zip
+          asset_content_type: application/zip

@@ -1,0 +1,28 @@
+# Git ignore for Glass Box Planner
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Data outputs (keep repository input data under version control)
+data/output/
+*.gpkg
+data/output/*.overall_summary.csv
+data/output/*.detailed_summary.csv
+
+# Temporary files
+temp_engine_run.py
+*.log
+.DS_Store
+# PyInstaller / build artifacts
+dist/
+build/
+*.spec
+# Ignore local GIS dataset archived on Zenodo
+data/input/gis_qazvin/
