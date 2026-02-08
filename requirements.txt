@@ -1,0 +1,9 @@
+# Requirements for Glass Box Planner
+geopandas
+pandas
+matplotlib
+customtkinter
+pyproj
+rtree
+fiona
+shapely
